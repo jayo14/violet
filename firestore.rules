@@ -1,0 +1,227 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Core Default-Deny Catch-All (Default Safety Net)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    // Global Helper Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+    
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+
+    // Entity-Specific Structural Validation Helpers
+    function isValidUserProfile(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.fullName is string && data.fullName.size() <= 200 &&
+             data.email is string && data.email.size() <= 200 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('github' in data) || (data.github is string && data.github.size() <= 250)) &&
+             (!('linkedin' in data) || (data.linkedin is string && data.linkedin.size() <= 250)) &&
+             (!('portfolio' in data) || (data.portfolio is string && data.portfolio.size() <= 250)) &&
+             (!('location' in data) || (data.location is string && data.location.size() <= 200));
+    }
+
+    function isValidCareerMemory(data) {
+      return data.identity is map &&
+             data.preference is map &&
+             data.history is map &&
+             data.learning is map;
+    }
+
+    function isValidOpportunity(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.company is string && data.company.size() <= 200 &&
+             data.location is string && data.location.size() <= 200 &&
+             data.status is string && data.status.size() <= 50 &&
+             data.createdAt is string && data.createdAt.size() <= 100;
+    }
+
+    // Email Intelligence Entities
+    function isValidEmailIntel(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.sender is string && data.sender.size() <= 200 &&
+             data.subject is string && data.subject.size() <= 300 &&
+             data.body is string && data.body.size() <= 10000 &&
+             data.category is string && data.category.size() <= 50 &&
+             data.processed is bool;
+    }
+
+    // Achievements Subcollection Elements
+    function isValidAchievement(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.title is string && data.title.size() <= 250 &&
+             data.source is string && data.source.size() <= 50 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.detectedAt is string && data.detectedAt.size() <= 100 &&
+             data.isAppliedToResume is bool;
+    }
+
+    // Approval Request Entity Forms
+    function isValidApprovalRequest(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.type is string && data.type.size() <= 50 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.status is string && (data.status == 'pending' || data.status == 'approved' || data.status == 'rejected') &&
+             data.createdAt is string && data.createdAt.size() <= 100 &&
+             data.payload is map;
+    }
+
+    // ---- MATCH BLOCKS ----
+
+    // User Profile Matched Documents
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      
+      allow create: if isOwner(userId) && 
+                       isVerifiedUser() && 
+                       isValidUserProfile(incoming()) && 
+                       incoming().id == userId && 
+                       incoming().email == request.auth.token.email;
+                       
+      allow update: if isOwner(userId) && 
+                       isVerifiedUser() && 
+                       isValidUserProfile(incoming()) && 
+                       incoming().id == userId && 
+                       incoming().id == existing().id &&
+                       incoming().email == existing().email && (
+                         // Define allowed properties using diff checks to secure properties
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'fullName', 'phone', 'github', 'linkedin', 'portfolio', 'location', 
+                           'education', 'skills', 'experience'
+                         ])
+                       );
+                       
+      allow delete: if isOwner(userId);
+
+      // Memory Sub-Collection Document Pattern
+      match /memory/careerMemory {
+        allow get: if isOwner(userId);
+        allow create: if isOwner(userId) && isVerifiedUser() && isValidCareerMemory(incoming());
+        allow update: if isOwner(userId) && isVerifiedUser() && isValidCareerMemory(incoming());
+        allow delete: if isOwner(userId);
+      }
+
+      // Tracked Applications and Jobs Opportunities
+      match /applications/{appId} {
+        allow get, list: if isOwner(userId);
+        
+        allow create: if isOwner(userId) && 
+                         isVerifiedUser() && 
+                         isValidId(appId) && 
+                         isValidOpportunity(incoming()) && 
+                         incoming().id == appId;
+                         
+        allow update: if isOwner(userId) && 
+                         isVerifiedUser() && 
+                         isValidId(appId) && 
+                         isValidOpportunity(incoming()) && 
+                         incoming().id == existing().id && 
+                         incoming().createdAt == existing().createdAt && (
+                           // Action: State Update Change Status
+                           incoming().diff(existing()).affectedKeys().hasOnly(['status']) ||
+                           // Action: Complete Full Editing Snapshot Update
+                           incoming().diff(existing()).affectedKeys().hasOnly([
+                             'title', 'company', 'location', 'salary', 'deadline', 'requirements', 'descriptionText', 'status'
+                           ])
+                         );
+                         
+        allow delete: if isOwner(userId) && isValidId(appId);
+      }
+
+      // Email Intelligence Correspondence Threads
+      match /emails/{mailId} {
+        allow get, list: if isOwner(userId);
+        
+        allow create: if isOwner(userId) && 
+                         isVerifiedUser() && 
+                         isValidId(mailId) && 
+                         isValidEmailIntel(incoming()) && 
+                         incoming().id == mailId;
+                         
+        allow update: if isOwner(userId) && 
+                         isVerifiedUser() && 
+                         isValidId(mailId) && 
+                         isValidEmailIntel(incoming()) && 
+                         incoming().id == existing().id && 
+                         incoming().receivedAt == existing().receivedAt && (
+                           // Action: Process/Archive Mail flag
+                           incoming().diff(existing()).affectedKeys().hasOnly(['processed']) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly(['processed', 'suggestedAction'])
+                         );
+                         
+        allow delete: if isOwner(userId) && isValidId(mailId);
+      }
+
+      // Candidates Achievements Logs
+      match /achievements/{achId} {
+        allow get, list: if isOwner(userId);
+        
+        allow create: if isOwner(userId) && 
+                         isVerifiedUser() && 
+                         isValidId(achId) && 
+                         isValidAchievement(incoming()) && 
+                         incoming().id == achId;
+                         
+        allow update: if isOwner(userId) && 
+                         isVerifiedUser() && 
+                         isValidId(achId) && 
+                         isValidAchievement(incoming()) && 
+                         incoming().id == existing().id && (
+                           // Action: Toggle applied flag or description adjustments
+                           incoming().diff(existing()).affectedKeys().hasOnly(['isAppliedToResume']) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly(['title', 'source', 'description', 'isAppliedToResume'])
+                         );
+                         
+        allow delete: if isOwner(userId) && isValidId(achId);
+      }
+
+      // Career Approval Queue elements
+      match /approvals/{apprId} {
+        allow get, list: if isOwner(userId);
+        
+        allow create: if isOwner(userId) && 
+                         isVerifiedUser() && 
+                         isValidId(apprId) && 
+                         isValidApprovalRequest(incoming()) && 
+                         incoming().id == apprId;
+                         
+        allow update: if isOwner(userId) && 
+                         isVerifiedUser() && 
+                         isValidId(apprId) && 
+                         isValidApprovalRequest(incoming()) && 
+                         incoming().id == existing().id && 
+                         incoming().createdAt == existing().createdAt && (
+                           // Action: Set Status (approved / rejected)
+                           incoming().diff(existing()).affectedKeys().hasOnly(['status'])
+                         );
+                         
+        allow delete: if isOwner(userId) && isValidId(apprId);
+      }
+    }
+  }
+}

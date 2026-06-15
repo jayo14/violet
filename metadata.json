@@ -1,0 +1,6 @@
+{
+  "name": "Violet",
+  "description": "AI-powered personal career operating system with an approval-driven workflow, managing application tailoring, Gmail intelligence, tracking, and interview prep.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

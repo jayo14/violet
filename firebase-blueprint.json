@@ -1,0 +1,124 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile containing personal information, education, skills, and experience.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "The User ID matching their auth uid" },
+        "fullName": { "type": "string", "description": "Full name of the candidate" },
+        "email": { "type": "string", "description": "Email address" },
+        "phone": { "type": "string", "description": "Phone number" },
+        "github": { "type": "string", "description": "Github profile URL" },
+        "linkedin": { "type": "string", "description": "LinkedIn profile URL" },
+        "portfolio": { "type": "string", "description": "Portfolio website URL" },
+        "location": { "type": "string", "description": "Current city and state" },
+        "education": { "type": "array", "description": "Array of Education objects" },
+        "skills": { "type": "array", "description": "List of engineering skills" },
+        "experience": { "type": "array", "description": "Array of work experience histories" }
+      },
+      "required": ["id", "fullName", "email"]
+    },
+    "CareerMemory": {
+      "title": "CareerMemory",
+      "description": "Violet's semantic understanding of the user's background, preferences, history, and learning.",
+      "type": "object",
+      "properties": {
+        "identity": { "type": "object", "description": "Key resume bullet summaries, skills, and projects" },
+        "preference": { "type": "object", "description": "Target job details and work styles" },
+        "history": { "type": "object", "description": "Overview collections of historical activity stats" },
+        "learning": { "type": "object", "description": "Observations and suggestions detected by Violet" }
+      },
+      "required": ["identity", "preference", "history", "learning"]
+    },
+    "Opportunity": {
+      "title": "Opportunity",
+      "description": "A job opportunity scanned or added in the tracking system.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "company": { "type": "string" },
+        "location": { "type": "string" },
+        "salary": { "type": "string" },
+        "deadline": { "type": "string" },
+        "requirements": { "type": "array" },
+        "descriptionText": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "company", "status", "createdAt"]
+    },
+    "EmailIntel": {
+      "title": "EmailIntel",
+      "description": "A recruiter email classified with Violet intelligent tags.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sender": { "type": "string" },
+        "subject": { "type": "string" },
+        "body": { "type": "string" },
+        "receivedAt": { "type": "string", "format": "date-time" },
+        "category": { "type": "string" },
+        "processed": { "type": "boolean" },
+        "suggestedAction": { "type": "string" }
+      },
+      "required": ["id", "sender", "subject", "body", "receivedAt", "category", "processed"]
+    },
+    "Achievement": {
+      "title": "Achievement",
+      "description": "A detected or added achievement to be woven into application bullets.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "source": { "type": "string" },
+        "description": { "type": "string" },
+        "detectedAt": { "type": "string", "format": "date-time" },
+        "isAppliedToResume": { "type": "boolean" }
+      },
+      "required": ["id", "title", "source", "description", "detectedAt", "isAppliedToResume"]
+    },
+    "ApprovalRequest": {
+      "title": "ApprovalRequest",
+      "description": "A pending or processed resume variant / cover letter material awaiting user sign-off.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "payload": { "type": "object" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "type", "title", "description", "payload", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Main user credentials and profile facts"
+    },
+    "users/{userId}/memory/careerMemory": {
+      "schema": "CareerMemory",
+      "description": "Career operating system memory metrics for custom tailoring"
+    },
+    "users/{userId}/applications/{id}": {
+      "schema": "Opportunity",
+      "description": "Tracked job opportunities"
+    },
+    "users/{userId}/emails/{id}": {
+      "schema": "EmailIntel",
+      "description": "Tracked recruiter correspondence logs"
+    },
+    "users/{userId}/achievements/{id}": {
+      "schema": "Achievement",
+      "description": "Detected candidates project or portfolio achievements"
+    },
+    "users/{userId}/approvals/{id}": {
+      "schema": "ApprovalRequest",
+      "description": "Draft edits or outgoing letter variants in approval state"
+    }
+  }
+}
