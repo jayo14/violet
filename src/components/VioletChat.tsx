@@ -271,8 +271,8 @@ export default function VioletChat({ onSendMessage, onNavigate }: VioletChatProp
 
           {isTyping && (
             <div className="flex gap-3 items-center mr-auto max-w-[85%]">
-              <div className="w-7 h-7 bg-violet-600 text-white rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 border border-violet-500 animate-pulse">
-                V
+              <div className="w-7 h-7 bg-zinc-900 text-white rounded-full flex items-center justify-center text-sm flex-shrink-0 border border-zinc-700">
+                <span className="sakura-spin">🌸</span>
               </div>
               <div className="p-3 bg-gray-50 border rounded-2xl rounded-bl-none flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 bg-violet-400 rounded-full animate-bounce"></span>

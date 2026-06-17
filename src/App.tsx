@@ -16,22 +16,19 @@ import InterviewPrepComp from "./components/InterviewPrepComp";
 import MemoryVault from "./components/MemoryVault";
 import ProfileManager from "./components/ProfileManager";
 import AuthAndOnboarding from "./components/AuthAndOnboarding";
+import CherryBlossomBackground from "./components/CherryBlossomBackground";
 
 import { 
   UserProfile, Opportunity, EmailIntel, Achievement, 
   ApprovalRequest, CareerMemory, ApplicationStatus 
 } from "./types";
 
-// Firebase Imports
-import { auth, db, logoutUser, OperationType, handleFirestoreError } from "./firebase";
-import { onAuthStateChanged } from "firebase/auth";
+// Appwrite Imports
 import { 
-  doc, 
-  onSnapshot, 
-  collection, 
-  setDoc, 
-  updateDoc 
-} from "firebase/firestore";
+  account, databases, logoutUser, OperationType, handleAppwriteError,
+  APPWRITE_DATABASE_ID, COLLECTIONS, getCurrentUser
+} from "./appwrite";
+import { Query } from "appwrite";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
@@ -106,104 +103,44 @@ export default function App() {
   const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity | null>(null);
   const [analysisContext, setAnalysisContext] = useState<any>(null);
 
-  // Real-time Firebase Synchronization
+  // Appwrite Auth + Data Sync
   useEffect(() => {
     setIsLoading(true);
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+    getCurrentUser().then(async (user) => {
       if (user) {
-        setUserId(user.uid);
+        setUserId(user.$id);
         setIsLoggedIn(true);
         localStorage.setItem("career_os_logged_in", "true");
-
-        // 1. Subscribe to profile document
-        const profileRef = doc(db, "users", user.uid);
-        const unsubProfile = onSnapshot(profileRef, (snap) => {
-          if (snap.exists()) {
-            setProfile(snap.data() as UserProfile);
-            setIsOnboarded(true);
-            localStorage.setItem("career_os_onboarded", "true");
-          } else {
-            setIsOnboarded(false);
-            localStorage.setItem("career_os_onboarded", "false");
-          }
-          setIsLoading(false);
-        }, (err) => {
-          setIsLoading(false);
-          handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
-        });
-
-        // 2. Subscribe to subcollections in real-time
-        const appRef = collection(db, "users", user.uid, "applications");
-        const unsubApps = onSnapshot(appRef, (snap) => {
-          const docsArr: Opportunity[] = [];
-          snap.forEach((d) => {
-            docsArr.push({ id: d.id, ...d.data() } as Opportunity);
-          });
-          setApplications(docsArr.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, `users/${user.uid}/applications`);
-        });
-
-        const emailsRef = collection(db, "users", user.uid, "emails");
-        const unsubEmails = onSnapshot(emailsRef, (snap) => {
-          const docsArr: EmailIntel[] = [];
-          snap.forEach((d) => {
-            docsArr.push({ id: d.id, ...d.data() } as EmailIntel);
-          });
-          setEmails(docsArr.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()));
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, `users/${user.uid}/emails`);
-        });
-
-        const achievementsRef = collection(db, "users", user.uid, "achievements");
-        const unsubAchievements = onSnapshot(achievementsRef, (snap) => {
-          const docsArr: Achievement[] = [];
-          snap.forEach((d) => {
-            docsArr.push({ id: d.id, ...d.data() } as Achievement);
-          });
-          setAchievements(docsArr.sort((a, b) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime()));
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, `users/${user.uid}/achievements`);
-        });
-
-        const approvalsRef = collection(db, "users", user.uid, "approvals");
-        const unsubApprovals = onSnapshot(approvalsRef, (snap) => {
-          const docsArr: ApprovalRequest[] = [];
-          snap.forEach((d) => {
-            docsArr.push({ id: d.id, ...d.data() } as ApprovalRequest);
-          });
-          setApprovals(docsArr.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, `users/${user.uid}/approvals`);
-        });
-
-        const memoryRef = doc(db, "users", user.uid, "memory", "careerMemory");
-        const unsubMemory = onSnapshot(memoryRef, (snap) => {
-          if (snap.exists()) {
-            setMemory(snap.data() as CareerMemory);
-          }
-        }, (err) => {
-          handleFirestoreError(err, OperationType.GET, `users/${user.uid}/memory/careerMemory`);
-        });
-
-        return () => {
-          unsubProfile();
-          unsubApps();
-          unsubEmails();
-          unsubAchievements();
-          unsubApprovals();
-          unsubMemory();
-        };
+        try {
+          const profileDoc = await databases.getDocument(APPWRITE_DATABASE_ID, COLLECTIONS.USERS, user.$id);
+          setProfile(profileDoc as unknown as UserProfile);
+          setIsOnboarded(true);
+          localStorage.setItem("career_os_onboarded", "true");
+        } catch {
+          setIsOnboarded(false);
+          localStorage.setItem("career_os_onboarded", "false");
+        }
+        try {
+          const [appsRes, emailsRes, achRes, apprRes] = await Promise.all([
+            databases.listDocuments(APPWRITE_DATABASE_ID, COLLECTIONS.APPLICATIONS, [Query.equal("userId", user.$id)]),
+            databases.listDocuments(APPWRITE_DATABASE_ID, COLLECTIONS.EMAILS, [Query.equal("userId", user.$id)]),
+            databases.listDocuments(APPWRITE_DATABASE_ID, COLLECTIONS.ACHIEVEMENTS, [Query.equal("userId", user.$id)]),
+            databases.listDocuments(APPWRITE_DATABASE_ID, COLLECTIONS.APPROVALS, [Query.equal("userId", user.$id)]),
+          ]);
+          setApplications((appsRes.documents as unknown as Opportunity[]).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+          setEmails((emailsRes.documents as unknown as EmailIntel[]).sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()));
+          setAchievements((achRes.documents as unknown as Achievement[]).sort((a, b) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime()));
+          setApprovals((apprRes.documents as unknown as ApprovalRequest[]).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+        } catch (err) {
+          console.error("Failed loading Appwrite collections:", err);
+        }
       } else {
-        setUserId(null);
         setIsLoggedIn(false);
         setIsOnboarded(false);
-        setIsLoading(false);
         localStorage.removeItem("career_os_logged_in");
       }
+      setIsLoading(false);
     });
-
-    return () => unsubscribeAuth();
   }, []);
 
   // API Callbacks for subcomponents
@@ -216,17 +153,12 @@ export default function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        return {
-          reply: data.reply,
-          styleProfile: data.styleProfile
-        };
+        return { reply: data.reply, styleProfile: data.styleProfile };
       }
     } catch (err) {
       console.error(err);
     }
-    return {
-      reply: "Violet Core AI: Failed to coordinate. Falling back to emergency guidelines."
-    };
+    return { reply: "Violet Core AI: Failed to coordinate. Falling back to emergency guidelines." };
   };
 
   const handleAnalyzeOpportunity = async (jd: string) => {
@@ -236,26 +168,15 @@ export default function App() {
       body: JSON.stringify({ jobDescription: jd, userId })
     });
     if (!res.ok) throw new Error("Failed opportunity audit specifications.");
-    
     const data = await res.json();
-    return {
-      opportunity: data.opportunity,
-      analysis: data.analysis
-    };
+    return { opportunity: data.opportunity, analysis: data.analysis };
   };
 
   const handleGenerateTailored = async (opp: Opportunity) => {
     const res = await fetch("/api/tailor-materials", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        opportunityId: opp.id,
-        jobTitle: opp.title,
-        company: opp.company,
-        jobRequirements: opp.requirements,
-        resumeSnapshot: profile.experience,
-        userId
-      })
+      body: JSON.stringify({ opportunityId: opp.id, jobTitle: opp.title, company: opp.company, jobRequirements: opp.requirements, resumeSnapshot: profile.experience, userId })
     });
     if (!res.ok) throw new Error("Tailoring error logs parsed.");
     return await res.json();
@@ -265,141 +186,94 @@ export default function App() {
     const res = await fetch("/api/interview-prep", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        role: opp.title,
-        company: opp.company,
-        requirements: opp.requirements,
-        userId
-      })
+      body: JSON.stringify({ role: opp.title, company: opp.company, requirements: opp.requirements, userId })
     });
     if (!res.ok) throw new Error("Interview generation sync error.");
     const data = await res.json();
-    return {
-      id: "prep-" + opp.id,
-      opportunityId: opp.id,
-      company: opp.company,
-      role: opp.title,
-      research: data.prep?.research || {},
-      technicalQuestions: data.prep?.technicalQuestions || [],
-      hrQuestions: data.prep?.hrQuestions || []
-    };
+    return { id: "prep-" + opp.id, opportunityId: opp.id, company: opp.company, role: opp.title, research: data.prep?.research || {}, technicalQuestions: data.prep?.technicalQuestions || [], hrQuestions: data.prep?.hrQuestions || [] };
   };
 
   const handleMineGithub = async (repo: string) => {
     try {
-      await fetch("/api/mine-github", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ githubRepoUrl: repo, userId })
-      });
-    } catch (err) {
-      console.error(err);
-    }
+      await fetch("/api/mine-github", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ githubRepoUrl: repo, userId }) });
+    } catch (err) { console.error(err); }
   };
 
   const handleTriggerEmailScan = async () => {
     try {
-      await fetch("/api/scan-emails", { 
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId })
-      });
-    } catch (err) {
-      console.error("Ad-hoc recruiter scan coordination failed:", err);
-    }
+      await fetch("/api/scan-emails", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId }) });
+    } catch (err) { console.error("Ad-hoc recruiter scan coordination failed:", err); }
   };
 
   const handleUpdateProfile = async (updatedProfile: UserProfile) => {
     if (!userId) return;
     try {
-      await setDoc(doc(db, "users", userId), updatedProfile);
-      await fetch("/api/update-profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: updatedProfile, userId })
-      });
+      await databases.createDocument(APPWRITE_DATABASE_ID, COLLECTIONS.USERS, userId, updatedProfile as any);
+      await fetch("/api/update-profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: updatedProfile, userId }) });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${userId}`);
+      handleAppwriteError(err, OperationType.UPDATE, `users/${userId}`);
     }
   };
 
   const handleApprove = async (id: string) => {
     if (!userId) return;
     try {
-      const apprDocRef = doc(db, "users", userId, "approvals", id);
-      await updateDoc(apprDocRef, { status: "approved" });
-
+      await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.APPROVALS, id, { status: "approved" });
       const approvedItem = approvals.find((a) => a.id === id);
       if (!approvedItem) return;
-
       if (approvedItem.type === "resume-variant") {
         const newDesc = `${profile.experience[0]?.description || ""} Approved Tailored Component: ${approvedItem.payload.tailoredBullet}`;
         const updatedExp = [...profile.experience];
-        if (updatedExp[0]) {
-          updatedExp[0].description = newDesc;
-        }
-        const updatedProf = { ...profile, experience: updatedExp };
-        await handleUpdateProfile(updatedProf);
+        if (updatedExp[0]) updatedExp[0].description = newDesc;
+        await handleUpdateProfile({ ...profile, experience: updatedExp });
       } else if (approvedItem.type === "add-achievement") {
-        const achRef = doc(db, "users", userId, "achievements", approvedItem.payload.id);
-        await updateDoc(achRef, { isAppliedToResume: true });
+        await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.ACHIEVEMENTS, approvedItem.payload.id, { isAppliedToResume: true });
       }
+      setApprovals(prev => prev.map(a => a.id === id ? { ...a, status: "approved" } : a));
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${userId}/approvals/${id}`);
+      handleAppwriteError(err, OperationType.UPDATE, `approvals/${id}`);
     }
   };
 
   const handleReject = async (id: string) => {
     if (!userId) return;
     try {
-      const apprDocRef = doc(db, "users", userId, "approvals", id);
-      await updateDoc(apprDocRef, { status: "rejected" });
+      await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.APPROVALS, id, { status: "rejected" });
+      setApprovals(prev => prev.map(a => a.id === id ? { ...a, status: "rejected" } : a));
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${userId}/approvals/${id}`);
+      handleAppwriteError(err, OperationType.UPDATE, `approvals/${id}`);
     }
   };
 
   const handleUpdateStatus = async (id: string, status: ApplicationStatus) => {
     if (!userId) return;
     try {
-      const appDocRef = doc(db, "users", userId, "applications", id);
-      await updateDoc(appDocRef, { status });
+      await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.APPLICATIONS, id, { status });
+      setApplications(prev => prev.map(a => a.id === id ? { ...a, status } : a));
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${userId}/applications/${id}`);
+      handleAppwriteError(err, OperationType.UPDATE, `applications/${id}`);
     }
   };
 
   const handleMarkEmailProcessed = async (id: string) => {
     if (!userId) return;
     try {
-      const mailDocRef = doc(db, "users", userId, "emails", id);
-      await updateDoc(mailDocRef, { processed: true });
+      await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.EMAILS, id, { processed: true });
+      setEmails(prev => prev.map(e => e.id === id ? { ...e, processed: true } : e));
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${userId}/emails/${id}`);
+      handleAppwriteError(err, OperationType.UPDATE, `emails/${id}`);
     }
   };
 
-  const handleCreateApprovalRequest = async (
-    type: "resume-variant" | "cover-letter" | "cover-email",
-    title: string,
-    description: string,
-    payload: any
-  ) => {
+  const handleCreateApprovalRequest = async (type: "resume-variant" | "cover-letter" | "cover-email", title: string, description: string, payload: any) => {
     if (!userId) return;
     const newId = "appr-" + Date.now();
+    const newAppr = { id: newId, type, title, description, payload, status: "pending", createdAt: new Date().toISOString(), userId };
     try {
-      const apprDocRef = doc(db, "users", userId, "approvals", newId);
-      await setDoc(apprDocRef, {
-        id: newId,
-        type,
-        title,
-        description,
-        payload,
-        status: "pending",
-        createdAt: new Date().toISOString()
-      });
+      await databases.createDocument(APPWRITE_DATABASE_ID, COLLECTIONS.APPROVALS, newId, newAppr);
+      setApprovals(prev => [newAppr as any, ...prev]);
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `users/${userId}/approvals/${newId}`);
+      handleAppwriteError(err, OperationType.CREATE, `approvals/${newId}`);
     }
   };
 
@@ -411,23 +285,19 @@ export default function App() {
   };
 
   const handleOnboardingComplete = async (completedProfile: Partial<UserProfile>, completedMemory: Partial<CareerMemory>) => {
-    if (!auth.currentUser) return;
-    const uid = auth.currentUser.uid;
-    
+    const user = await getCurrentUser();
+    if (!user) return;
+    const uid = user.$id;
+
     const profileData = {
-      id: uid,
-      fullName: completedProfile.fullName || "Google Candidate",
-      email: completedProfile.email || "sayojami2007@gmail.com",
-      phone: profile.phone,
-      github: profile.github,
-      linkedin: profile.linkedin,
-      portfolio: profile.portfolio,
-      location: completedProfile.location || "Seattle, WA",
-      education: profile.education,
-      skills: completedProfile.skills || profile.skills,
+      id: uid, userId: uid,
+      fullName: completedProfile.fullName || "Candidate",
+      email: completedProfile.email || profile.email,
+      phone: profile.phone, github: profile.github, linkedin: profile.linkedin,
+      portfolio: profile.portfolio, location: completedProfile.location || "Seattle, WA",
+      education: profile.education, skills: completedProfile.skills || profile.skills,
       experience: profile.experience
     };
-
     const memoryData = {
       identity: completedMemory.identity || { skills: [], education: [], projects: [] },
       preference: completedMemory.preference || { preferredRoles: [], preferredLocations: [], remotePreference: true },
@@ -436,27 +306,23 @@ export default function App() {
     };
 
     try {
-      await setDoc(doc(db, "users", uid), profileData);
-      await setDoc(doc(db, "users", uid, "memory", "careerMemory"), memoryData);
-      
-      // Let server seed initial structures in Firestore for this new user
+      await databases.createDocument(APPWRITE_DATABASE_ID, COLLECTIONS.USERS, uid, profileData as any);
       await fetch("/api/init-user", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: uid, profile: profileData, memory: memoryData })
       });
-
+      setUserId(uid);
       setIsLoggedIn(true);
       setIsOnboarded(true);
     } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `users/${uid}`);
+      handleAppwriteError(err, OperationType.CREATE, `users/${uid}`);
     }
   };
 
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50/50 font-sans">
-        <span className="w-10 h-10 border-4 border-violet-600 border-t-transparent rounded-full animate-spin"></span>
+        <span className="text-4xl sakura-spin">🌸</span>
         <h2 className="text-sm font-semibold text-gray-800 mt-4 animate-pulse">Synchronizing Violet Telemetry...</h2>
       </div>
     );
@@ -481,12 +347,13 @@ export default function App() {
   const isSecondaryTab = ["analyzer", "email-intel", "interview-prep", "memory-vault", "profile"].includes(activeTab);
 
   return (
-    <div className="min-h-screen bg-[#FAFAFA] text-[#18181b] flex flex-col font-sans transition-all selection:bg-zinc-200 selection:text-zinc-900">
+    <div className="relative min-h-screen bg-[#FAFAFA] text-[#18181b] flex flex-col font-sans transition-all selection:bg-zinc-200 selection:text-zinc-900">
+      <CherryBlossomBackground />
       {/* Outer master top bar */}
       <header className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-zinc-200/80 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 bg-zinc-900 rounded-lg flex items-center justify-center text-white text-xs font-bold shadow-xs relative overflow-hidden">
-            V
+            🌸
           </div>
           <div>
             <h1 className="text-sm font-bold tracking-tight text-zinc-900 flex items-center gap-1.5">
