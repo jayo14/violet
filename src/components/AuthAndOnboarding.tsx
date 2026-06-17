@@ -6,7 +6,7 @@ import {
   Palette, Cpu, Layers, Zap, TrendingUp, Brain, Server, GraduationCap, Award, Globe, HelpCircle, Building2
 } from "lucide-react";
 import { UserProfile, CareerMemory } from "../types";
-import { loginWithGoogle } from "../firebase";
+import { loginWithGoogle, loginWithEmail, signupWithEmail } from "../appwrite";
 
 interface AuthAndOnboardingProps {
   onComplete: (profileData: Partial<UserProfile>, memoryData: Partial<CareerMemory>) => void;
@@ -39,24 +39,35 @@ export default function AuthAndOnboarding({ onComplete, userEmail }: AuthAndOnbo
     setIsSigningIn(true);
     setAuthError("");
     try {
-      const fbUser = await loginWithGoogle();
-      if (fbUser) {
-        setFullName(fbUser.displayName || "Google Candidate");
-        setEmail(fbUser.email || "sayojami2007@gmail.com");
-        setScreen("onboarding");
-      }
+      // Appwrite OAuth redirects the browser — no return value
+      await loginWithGoogle();
     } catch (err: any) {
       console.error(err);
       setAuthError(err.message || "Failed to authenticate. Please verify popups are allowed.");
+      setIsSigningIn(false);
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSigningIn(true);
+    setAuthError("");
+    try {
+      if (authTab === "signup") {
+        await signupWithEmail(email, password, fullName);
+      } else {
+        await loginWithEmail(email, password);
+      }
+      setScreen("onboarding");
+    } catch (err: any) {
+      console.error(err);
+      setAuthError(err.message || "Authentication failed. Please check your credentials.");
     } finally {
       setIsSigningIn(false);
     }
   };
 
-  const handleAuthSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    handleGoogleSignInClick();
-  };
+  const handleAuthSubmit = handleEmailAuth;
 
   const handleSkipOrDirectComplete = () => {
     // Quick completion with preselected elements if skipped or instantly configured

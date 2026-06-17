@@ -1,48 +1,61 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
-import fs from "fs";
-import { initializeApp } from "firebase/app";
-import { 
-  getFirestore, doc, getDoc, setDoc, updateDoc, 
-  collection, getDocs, deleteDoc 
-} from "firebase/firestore";
 
 dotenv.config();
 
-// Load client-side Firebase configuration for backend server operations
-const configPath = path.resolve(process.cwd(), "firebase-applet-config.json");
-const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+// Generic LLM client - compatible with OpenRouter, Nvidia NIM, and any OpenAI-compatible API
+const LLM_BASE_URL = process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1";
+const LLM_API_KEY = process.env.LLM_API_KEY || "";
+const LLM_MODEL = process.env.LLM_MODEL || "meta-llama/llama-3.3-8b-instruct:free";
 
-// Initialize Gemini SDK safely based on the system skill guidelines
-let ai: GoogleGenAI | null = null;
-const apiKey = process.env.GEMINI_API_KEY;
+const ai = LLM_API_KEY ? true : false;
 
-if (apiKey && apiKey !== "MY_GEMINI_API_KEY") {
-  try {
-    ai = new GoogleGenAI({
-      apiKey: apiKey,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    });
-  } catch (err) {
-    console.error("Failed to initialize Gemini AI SDK:", err);
-  }
-} else {
-  console.warn("GEMINI_API_KEY is not set or using placeholder, running in simulation fallback mode.");
+if (!LLM_API_KEY) {
+  console.warn("LLM_API_KEY is not set, running in simulation fallback mode.");
+}
+
+async function llmComplete(prompt: string, jsonMode = true): Promise<string> {
+  const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${LLM_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: LLM_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(`LLM API error: ${res.status} ${res.statusText}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "{}";
+}
+
+async function llmChat(messages: { role: string; content: string }[], systemInstruction: string, jsonMode = true): Promise<string> {
+  const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${LLM_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: LLM_MODEL,
+      messages: [{ role: "system", content: systemInstruction }, ...messages],
+      ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+    }),
+  });
+  if (!res.ok) throw new Error(`LLM API error: ${res.status} ${res.statusText}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "{}";
 }
 
 const app = express();
 app.use(express.json({ limit: "15mb" }));
 
-const PORT = 3000;
+const PORT = 5173;
 
 // State stored on server root (lasts for the container session, is backed up / complemented by client localStorage)
 let userProfile = {
@@ -280,76 +293,13 @@ app.post("/api/init-user", async (req, res) => {
   if (!userId) {
     return res.status(400).json({ error: "Missing userId parameter" });
   }
-
-  try {
-    const userRef = doc(db, "users", userId);
-    await setDoc(userRef, profile);
-
-    const memoryRef = doc(db, "users", userId, "memory", "careerMemory");
-    await setDoc(memoryRef, memory);
-
-    // Seed default opportunities
-    for (const app of applications) {
-      const appRef = doc(db, "users", userId, "applications", app.id);
-      await setDoc(appRef, { ...app, createdAt: new Date().toISOString() });
-    }
-
-    // Seed default emails
-    for (const emailItem of emails) {
-      const emailRef = doc(db, "users", userId, "emails", emailItem.id);
-      await setDoc(emailRef, emailItem);
-    }
-
-    // Seed default achievements
-    for (const ach of achievements) {
-      const achRef = doc(db, "users", userId, "achievements", ach.id);
-      await setDoc(achRef, ach);
-    }
-
-    // Seed default approvals
-    for (const appr of approvalQueue) {
-      const apprRef = doc(db, "users", userId, "approvals", appr.id);
-      await setDoc(apprRef, appr);
-    }
-
-    res.json({ success: true });
-  } catch (err: any) {
-    console.error("Failed to seed onboarding user profile:", err);
-    res.status(500).json({ error: err.message });
-  }
+  // Profile seeded in Appwrite from client; server keeps in-memory defaults
+  if (profile) userProfile = { ...userProfile, ...profile };
+  if (memory) careerMemory = { ...careerMemory, ...memory };
+  res.json({ success: true });
 });
 
 app.get("/api/state", async (req, res) => {
-  const { userId } = req.query;
-  if (userId && typeof userId === "string") {
-    try {
-      const profileSnap = await getDoc(doc(db, "users", userId));
-      const memorySnap = await getDoc(doc(db, "users", userId, "memory", "careerMemory"));
-      
-      const appsSnap = await getDocs(collection(db, "users", userId, "applications"));
-      const appsArr = appsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      const emailsSnap = await getDocs(collection(db, "users", userId, "emails"));
-      const emailsArr = emailsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      const achSnap = await getDocs(collection(db, "users", userId, "achievements"));
-      const achArr = achSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      const apprSnap = await getDocs(collection(db, "users", userId, "approvals"));
-      const apprArr = apprSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      return res.json({
-        userProfile: profileSnap.exists() ? profileSnap.data() : userProfile,
-        careerMemory: memorySnap.exists() ? memorySnap.data() : careerMemory,
-        applications: appsArr.length > 0 ? appsArr : applications,
-        emails: emailsArr.length > 0 ? emailsArr : emails,
-        achievements: achArr.length > 0 ? achArr : achievements,
-        approvalQueue: apprArr.length > 0 ? apprArr : approvalQueue,
-      });
-    } catch (err) {
-      console.error("Failed loading backend state for user:", err);
-    }
-  }
   res.json({
     userProfile,
     applications,
@@ -361,19 +311,9 @@ app.get("/api/state", async (req, res) => {
 });
 
 app.post("/api/update-profile", async (req, res) => {
-  const { profile, userId } = req.body;
-  if (profile) {
-    if (userId) {
-      try {
-        await setDoc(doc(db, "users", userId), profile, { merge: true });
-      } catch (err) {
-        console.error("Failed saving updated profile to Firestore in express:", err);
-      }
-    } else {
-      userProfile = { ...userProfile, ...profile };
-    }
-  }
-  res.json({ success: true, profile: userId ? profile : userProfile });
+  const { profile } = req.body;
+  if (profile) userProfile = { ...userProfile, ...profile };
+  res.json({ success: true, profile: userProfile });
 });
 
 // RESUME PARSER - invokes Gemini API
@@ -421,18 +361,11 @@ interface UserProfile {
 RAW RESUME TO PARSE:
 ${resumeText}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-      }
-    });
-
-    const parsedJson = JSON.parse(response.text?.trim() || "{}");
+    const text = await llmComplete(prompt);
+    const parsedJson = JSON.parse(text.trim());
     res.json({ success: true, profile: parsedJson });
   } catch (err: any) {
-    console.warn("Gemini failed during parsing, executing simulation fallback:", err);
+    console.warn("LLM failed during parsing, executing simulation fallback:", err);
     const mockProfile = {
       fullName: userProfile.fullName || "John Doe",
       email: userProfile.email || "sayojami2007@gmail.com",
@@ -490,7 +423,7 @@ app.post("/api/analyze-opportunity", async (req, res) => {
 
     if (userId) {
       try {
-        await setDoc(doc(db, "users", userId, "applications", mockAnalysis.opportunity.id), mockAnalysis.opportunity);
+        applications = [mockAnalysis.opportunity, ...applications];
       } catch (err) {
         console.error("Failed saving mock opportunity to Firestore:", err);
       }
@@ -531,15 +464,8 @@ Analyze this opportunity. Extract details in JSON adhering strictly to:
 
 Respond only with the requested JSON. Give highly intelligent, precise matching scores between 0 and 100 (never make it exactly 100). Use your warm feminine counselor personality inside recommendations.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-      }
-    });
-
-    const parsedJson = JSON.parse(response.text?.trim() || "{}");
+    const text = await llmComplete(prompt);
+    const parsedJson = JSON.parse(text.trim());
     const generatedOpp = {
       id: "opp-" + Date.now(),
       title: parsedJson.opportunity?.title || "Unknown Role",
@@ -554,7 +480,7 @@ Respond only with the requested JSON. Give highly intelligent, precise matching 
     };
 
     if (userId) {
-      await setDoc(doc(db, "users", userId, "applications", generatedOpp.id), generatedOpp);
+      applications = [generatedOpp, ...applications];
     } else {
       applications = [generatedOpp, ...applications];
     }
@@ -596,7 +522,7 @@ Respond only with the requested JSON. Give highly intelligent, precise matching 
 
     if (userId) {
       try {
-        await setDoc(doc(db, "users", userId, "applications", mockAnalysis.opportunity.id), mockAnalysis.opportunity);
+        applications = [mockAnalysis.opportunity, ...applications];
       } catch (fErr) {
         console.error("Failed saving mock fallback opportunity to Firestore:", fErr);
       }
@@ -648,15 +574,9 @@ Conform strictly to the following JSON structure:
 
 Provide only valid JSON. Ensure your phrasing has a refined, polished style. No technical jargon-slop.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-      }
-    });
+    const text = await llmComplete(prompt);
 
-    const parsedJson = JSON.parse(response.text?.trim() || "{}");
+    const parsedJson = JSON.parse(text.trim());
     res.json({ success: true, ...parsedJson });
   } catch (err: any) {
     console.warn("Gemini failed during tailoring, executing simulation fallback:", err);
@@ -734,15 +654,9 @@ Respond with valid JSON adhering strictly to:
 
 Provide only valid JSON. Ensure suggestions is highly customized. Let the developer feel prepared to impress any team.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-      }
-    });
+    const text = await llmComplete(prompt);
 
-    const parsedJson = JSON.parse(response.text?.trim() || "{}");
+    const parsedJson = JSON.parse(text.trim());
     res.json({ success: true, prep: parsedJson });
   } catch (err: any) {
     console.warn("Gemini failed during interview prep, executing simulation fallback:", err);
@@ -798,19 +712,10 @@ app.post("/api/mine-github", async (req, res) => {
 
     if (userId) {
       try {
-        await setDoc(doc(db, "users", userId, "achievements", mockMining.detectedAchievement.id), mockMining.detectedAchievement);
-        
+        achievements = [mockMining.detectedAchievement, ...achievements];
         const approvalId = "appr-newach-" + Date.now();
-        const approvalReq = {
-          id: approvalId,
-          type: "add-achievement",
-          title: `Link Project to Resume: ${mockMining.detectedAchievement.title}`,
-          description: "Inspect project bullet to add into resume structures.",
-          payload: mockMining.detectedAchievement,
-          status: "pending",
-          createdAt: new Date().toISOString()
-        };
-        await setDoc(doc(db, "users", userId, "approvals", approvalId), approvalReq);
+        const approvalReq: any = { id: approvalId, type: "add-achievement", title: `Link Project to Resume: ${mockMining.detectedAchievement.title}`, description: "Inspect project bullet to add into resume structures.", payload: mockMining.detectedAchievement, status: "pending", createdAt: new Date().toISOString() };
+        approvalQueue = [approvalReq, ...approvalQueue];
       } catch (err) {
         console.error("Failed saving mock project achievement to Firestore:", err);
       }
@@ -854,15 +759,9 @@ Conform strictly to:
 
 Provide valid JSON only. Keep instructions highly practical and designed to impress elite technology teams.`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-      }
-    });
+    const text = await llmComplete(prompt);
 
-    const parsedJson = JSON.parse(response.text?.trim() || "{}");
+    const parsedJson = JSON.parse(text.trim());
     const docAchievement = {
       id: "ach-" + Date.now(),
       title: parsedJson.detectedAchievement?.title || "New Project Development",
@@ -873,19 +772,10 @@ Provide valid JSON only. Keep instructions highly practical and designed to impr
     };
 
     if (userId) {
-      await setDoc(doc(db, "users", userId, "achievements", docAchievement.id), docAchievement);
-      
+      achievements = [docAchievement, ...achievements];
       const approvalId = "appr-newach-" + Date.now();
-      const approvalReq = {
-        id: approvalId,
-        type: "add-achievement",
-        title: `Link Project to Resume: ${docAchievement.title}`,
-        description: "Inspect project bullet to add into resume structures.",
-        payload: docAchievement,
-        status: "pending",
-        createdAt: new Date().toISOString()
-      };
-      await setDoc(doc(db, "users", userId, "approvals", approvalId), approvalReq);
+      const approvalReq: any = { id: approvalId, type: "add-achievement", title: `Link Project to Resume: ${docAchievement.title}`, description: "Inspect project bullet to add into resume structures.", payload: docAchievement, status: "pending", createdAt: new Date().toISOString() };
+      approvalQueue = [approvalReq, ...approvalQueue];
     } else {
       achievements = [docAchievement, ...achievements];
       approvalQueue = [{
@@ -922,19 +812,10 @@ Provide valid JSON only. Keep instructions highly practical and designed to impr
 
     if (userId) {
       try {
-        await setDoc(doc(db, "users", userId, "achievements", mockMining.detectedAchievement.id), mockMining.detectedAchievement);
-        
+        achievements = [mockMining.detectedAchievement, ...achievements];
         const approvalId = "appr-newach-" + Date.now();
-        const approvalReq = {
-          id: approvalId,
-          type: "add-achievement",
-          title: `Link Project to Resume: ${mockMining.detectedAchievement.title}`,
-          description: "Inspect project bullet to add into resume structures.",
-          payload: mockMining.detectedAchievement,
-          status: "pending",
-          createdAt: new Date().toISOString()
-        };
-        await setDoc(doc(db, "users", userId, "approvals", approvalId), approvalReq);
+        const approvalReq: any = { id: approvalId, type: "add-achievement", title: `Link Project to Resume: ${mockMining.detectedAchievement.title}`, description: "Inspect project bullet to add into resume structures.", payload: mockMining.detectedAchievement, status: "pending", createdAt: new Date().toISOString() };
+        approvalQueue = [approvalReq, ...approvalQueue];
       } catch (fErr) {
         console.error("Failed saving fallback project achievement to Firestore:", fErr);
       }
@@ -1012,18 +893,12 @@ Conform strictly to this JSON format:
 }
 Provide raw VALID JSON only.`;
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-        }
-      });
-      const parsed = JSON.parse(response.text?.trim() || "{}");
+      const text = await llmComplete(prompt);
+      const parsed = JSON.parse(text.trim());
       if (parsed.category) category = parsed.category;
       if (parsed.suggestedAction) suggestedAction = parsed.suggestedAction;
     } catch (err) {
-      console.error("Gemini email classification failed, falling back to rule analysis:", err);
+      console.error("LLM email classification failed, falling back to rule analysis:", err);
     }
   }
 
@@ -1083,7 +958,7 @@ async function triggerIncomingEmailScan(userId?: string) {
   
   if (userId) {
     try {
-      await setDoc(doc(db, "users", userId, "emails", classifiedMail.id), classifiedMail);
+      emails.unshift(classifiedMail);
     } catch (err) {
       console.error("Failed saving scanned email to Firestore:", err);
     }
@@ -1127,7 +1002,7 @@ async function triggerIncomingEmailScan(userId?: string) {
   if (approvalRequest) {
     if (userId) {
       try {
-        await setDoc(doc(db, "users", userId, "approvals", approvalRequest.id), approvalRequest);
+        approvalQueue.unshift(approvalRequest);
       } catch (err) {
         console.error("Failed saving scanned approval to Firestore:", err);
       }
@@ -1199,28 +1074,12 @@ app.post("/api/sync-real-gmail", async (req, res) => {
       let duplicate = false;
       let docId = msgRef.id || ("mail-" + Date.now() + "-" + Math.random().toString(36).substring(2, 6));
       
-      if (userId) {
-        try {
-          const docRef = doc(db, "users", userId, "emails", docId);
-          const docSnap = await getDoc(docRef);
-          duplicate = docSnap.exists();
-          if (!duplicate) {
-            const classified = await classifyEmailWithAgent(senderHeader, subjectHeader, bodyText, new Date().toISOString());
-            classified.id = docId;
-            await setDoc(docRef, classified);
-            imported.push(classified);
-          }
-        } catch (err) {
-          console.error("Firestore email duplication check failed:", err);
-        }
-      } else {
-        duplicate = emails.some(e => e.subject === subjectHeader && e.sender === senderHeader);
-        if (!duplicate) {
-          const classified = await classifyEmailWithAgent(senderHeader, subjectHeader, bodyText, new Date().toISOString());
-          classified.id = docId;
-          emails.unshift(classified);
-          imported.push(classified);
-        }
+      duplicate = emails.some(e => e.subject === subjectHeader && e.sender === senderHeader);
+      if (!duplicate) {
+        const classified = await classifyEmailWithAgent(senderHeader, subjectHeader, bodyText, new Date().toISOString());
+        classified.id = docId;
+        emails.unshift(classified);
+        imported.push(classified);
       }
     }
 
@@ -1369,48 +1228,15 @@ app.post("/api/chat", async (req, res) => {
 Analyze the user's latest input and history to formulate the 'reply'.
 Also, compile/update the 'styleProfile' representing the user's current speech metrics. Estimate their sentence length, formality level, repeating key phrases/slang words, decision style, and emotional tone. Gradually increase 'adaptationLevel' up to 100 based on conversation depth. Return VALID RAW JSON matching the requested schema.`;
 
-    // Map server chat history into Gemini SDK contents parameter
+    // Build messages array for OpenAI-compatible chat
     const formattedContents = serverChatHistory.map(h => ({
-      role: h.role,
-      parts: [{ text: h.text }]
+      role: h.role === "model" ? "assistant" : "user" as const,
+      content: h.text
     }));
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: formattedContents,
-      config: {
-        systemInstruction: systemIns,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            reply: {
-              type: Type.STRING,
-              description: "The conversation response from Violet, written in 'The Quiet Adaptive Scribe' style, subtly mirroring the user."
-            },
-            styleProfile: {
-              type: Type.OBJECT,
-              properties: {
-                averageSentenceLength: { type: Type.STRING, description: "'short' | 'medium' | 'long'" },
-                formalityLevel: { type: Type.STRING, description: "'casual' | 'structured' | 'formal'" },
-                keyPhrases: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: "List of key phrases or short slang words used by the user, like 'it makes sense', 'looks good', 'not bad'."
-                },
-                decisionStyle: { type: Type.STRING, description: "'fast' | 'cautious' | 'exploratory'" },
-                emotionalTone: { type: Type.STRING, description: "'stressed' | 'motivated' | 'focused' | 'neutral'" },
-                adaptationLevel: { type: Type.INTEGER, description: "Adaptation sync level from 60 to 100." }
-              },
-              required: ["averageSentenceLength", "formalityLevel", "keyPhrases", "decisionStyle", "emotionalTone", "adaptationLevel"]
-            }
-          },
-          required: ["reply", "styleProfile"]
-        }
-      }
-    });
+    const text = await llmChat(formattedContents, systemIns);
 
-    const parsedJson = JSON.parse(response.text?.trim() || "{}");
+    const parsedJson = JSON.parse(text.trim());
     const reply = parsedJson.reply || "I checked your message. Let's see what we can do next.";
     const styleProfile = parsedJson.styleProfile || calculateSimulatedStyleProfile(message);
 
@@ -1426,8 +1252,7 @@ Also, compile/update the 'styleProfile' representing the user's current speech m
       styleProfile 
     });
   } catch (err: any) {
-    console.error("Gemini failed during chat assistant:", err);
-    // Graceful offline fallback
+    console.error("LLM failed during chat assistant:", err);
     const styleProfile = calculateSimulatedStyleProfile(message);
     res.json({ 
       success: true, 
