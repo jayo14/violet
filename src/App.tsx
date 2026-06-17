@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { 
   Sparkles, Compass, ShieldAlert, Target, Award, LayoutGrid, 
-  Mail, Calendar, Briefcase, BookOpen, Settings, User, Terminal, Check, Menu, X
+  Mail, Calendar, Briefcase, BookOpen, Settings, User, Terminal, Check, Menu, X, Zap
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -15,6 +15,7 @@ import ApplicationTracker from "./components/ApplicationTracker";
 import InterviewPrepComp from "./components/InterviewPrepComp";
 import MemoryVault from "./components/MemoryVault";
 import ProfileManager from "./components/ProfileManager";
+import IntegrationsManager from "./components/IntegrationsManager";
 import AuthAndOnboarding from "./components/AuthAndOnboarding";
 import CherryBlossomBackground from "./components/CherryBlossomBackground";
 
@@ -341,10 +342,11 @@ export default function App() {
     { id: "email-intel", label: "Email Intel", icon: Mail },
     { id: "interview-prep", label: "Interview Preps", icon: Calendar },
     { id: "memory-vault", label: "Memory Vault", icon: BookOpen },
-    { id: "profile", label: "Master Profile", icon: User }
+    { id: "profile", label: "Master Profile", icon: User },
+    { id: "integrations", label: "Integrations", icon: Zap }
   ];
 
-  const isSecondaryTab = ["analyzer", "email-intel", "interview-prep", "memory-vault", "profile"].includes(activeTab);
+  const isSecondaryTab = ["analyzer", "email-intel", "interview-prep", "memory-vault", "profile", "integrations"].includes(activeTab);
 
   return (
     <div className="relative min-h-screen bg-[#FAFAFA] text-[#18181b] flex flex-col font-sans transition-all selection:bg-zinc-200 selection:text-zinc-900">
@@ -536,6 +538,10 @@ export default function App() {
                     }).catch(() => {});
                   }}
                 />
+              )}
+
+              {activeTab === "integrations" && (
+                <IntegrationsManager />
               )}
             </motion.div>
           </AnimatePresence>

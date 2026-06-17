@@ -2,19 +2,53 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
+import session from "express-session";
+import cookieParser from "cookie-parser";
+import { v4 as uuidv4 } from "uuid";
+import TelegramBot from "node-telegram-bot-api";
+import { Composio } from "@composio/core";
 
 dotenv.config();
 
-// Generic LLM client - compatible with OpenRouter, Nvidia NIM, and any OpenAI-compatible API
-const LLM_BASE_URL = process.env.LLM_BASE_URL || "https://openrouter.ai/api/v1";
+// LLM Provider Configuration - Support for OpenRouter, NVIDIA NIM, Groq, etc.
+const LLM_PROVIDER = process.env.LLM_PROVIDER || "openrouter"; // openrouter, nvidia, groq
+const LLM_BASE_URL = process.env.LLM_BASE_URL || 
+  (LLM_PROVIDER === "nvidia" ? "https://integrate.api.nvidia.com/v1" :
+   LLM_PROVIDER === "groq" ? "https://api.groq.com/openai/v1" :
+   "https://openrouter.ai/api/v1");
+
 const LLM_API_KEY = process.env.LLM_API_KEY || "";
-const LLM_MODEL = process.env.LLM_MODEL || "meta-llama/llama-3.3-8b-instruct:free";
+const LLM_MODEL = process.env.LLM_MODEL || 
+  (LLM_PROVIDER === "nvidia" ? "meta/llama-3.3-70b-instruct" :
+   LLM_PROVIDER === "groq" ? "llama-3.3-70b-versatile" :
+   "meta-llama/llama-3.3-8b-instruct:free");
 
 const ai = LLM_API_KEY ? true : false;
 
 if (!LLM_API_KEY) {
-  console.warn("LLM_API_KEY is not set, running in simulation fallback mode.");
+  console.warn(`LLM_API_KEY is not set for provider ${LLM_PROVIDER}, running in simulation fallback mode.`);
+} else {
+  console.log(`[LLM] Configured for ${LLM_PROVIDER} using model ${LLM_MODEL}`);
 }
+
+// Telegram Bot Configuration
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_WEBHOOK_URL = process.env.TELEGRAM_WEBHOOK_URL || "";
+
+// Composio Configuration
+const COMPOSIO_API_KEY = process.env.COMPOSIO_API_KEY || "";
+const COMPOSIO_BASE_URL = process.env.COMPOSIO_BASE_URL || "https://api.composio.dev";
+
+// OAuth2 Configuration
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "";
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || "http://localhost:5173/auth/google/callback";
+
+const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID || "";
+const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || "";
+const GITHUB_REDIRECT_URI = process.env.GITHUB_REDIRECT_URI || "http://localhost:5173/auth/github/callback";
+
+const SESSION_SECRET = process.env.SESSION_SECRET || "violet-session-secret-change-in-prod";
 
 async function llmComplete(prompt: string, jsonMode = true): Promise<string> {
   const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
@@ -54,6 +88,181 @@ async function llmChat(messages: { role: string; content: string }[], systemInst
 
 const app = express();
 app.use(express.json({ limit: "15mb" }));
+app.use(cookieParser());
+app.use(session({
+  name: "violet.sid",
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === "production",
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000,
+    sameSite: "lax"
+  },
+  genid: () => uuidv4()
+}));
+
+// ---- Telegram Bot Setup ----
+let telegramBot: TelegramBot | null = null;
+const telegramChatSessions = new Map<number, { role: "user" | "model"; text: string }[]>();
+
+if (TELEGRAM_BOT_TOKEN) {
+  if (TELEGRAM_WEBHOOK_URL) {
+    telegramBot = new TelegramBot(TELEGRAM_BOT_TOKEN);
+    telegramBot.setWebHook(`${TELEGRAM_WEBHOOK_URL}/api/telegram/webhook`);
+    console.log("[Telegram] Webhook mode configured at", TELEGRAM_WEBHOOK_URL);
+  } else {
+    telegramBot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+    console.log("[Telegram] Polling mode active");
+  }
+
+  telegramBot.onText(/\/start/, (msg) => {
+    const chatId = msg.chat.id;
+    telegramChatSessions.set(chatId, []);
+    telegramBot?.sendMessage(
+      chatId,
+      "Hi there. I'm Violet, your career assistant. Let's get things sorted.\n\nI can check your resume, track jobs, scan emails, and prepare interview briefs. No big words, just results."
+    );
+  });
+
+  telegramBot.onText(/\/help/, (msg) => {
+    const chatId = msg.chat.id;
+    telegramBot?.sendMessage(
+      chatId,
+      "Here is what I can do:\n\n/profile — shows your skills & history\n/upload_resume — upload new files\n/create_resume — tailor a resume\n/analyze — check a job spec\n/applications — view tracker status\n/interviews — check prepped interview briefs\n/digest — see today's plan\n/connect_gmail — connect your Gmail via Composio\n/connect_calendar — connect Google Calendar via Composio"
+    );
+  });
+
+  telegramBot.onText(/\/digest/, (msg) => {
+    const chatId = msg.chat.id;
+    telegramBot?.sendMessage(
+      chatId,
+      "Here is today's check:\n- 8 jobs analyzed.\n- 2 fit your skills well: Stripe & Anthropic.\n- Needs your okay: Stripe resume bullets draft.\n- You have an interview with Anthropic this Thursday. I prepped some questions."
+    );
+  });
+
+  telegramBot.onText(/\/profile/, (msg) => {
+    const chatId = msg.chat.id;
+    telegramBot?.sendMessage(
+      chatId,
+      `Here is your profile:\n- Name: ${userProfile.fullName}\n- School: ${userProfile.education[0]?.school || "N/A"}\n- Core Skills: ${userProfile.skills.slice(0, 6).join(", ")}\n- Current job: ${userProfile.experience[0]?.role || "N/A"} @ ${userProfile.experience[0]?.company || "N/A"}`
+    );
+  });
+
+  telegramBot.onText(/\/connect_gmail/, (msg) => {
+    const chatId = msg.chat.id;
+    if (!COMPOSIO_API_KEY) {
+      telegramBot?.sendMessage(chatId, "Gmail connection requires Composio to be configured. Set COMPOSIO_API_KEY in your environment.");
+      return;
+    }
+    const connectUrl = `${process.env.BASE_URL || "http://localhost:5173"}/api/composio/connect/GMAIL?state=${chatId}`;
+    telegramBot?.sendMessage(chatId, `Connect your Gmail to let Violet read recruiter emails:\n\n${connectUrl}`);
+  });
+
+  telegramBot.onText(/\/connect_calendar/, (msg) => {
+    const chatId = msg.chat.id;
+    if (!COMPOSIO_API_KEY) {
+      telegramBot?.sendMessage(chatId, "Calendar connection requires Composio to be configured. Set COMPOSIO_API_KEY in your environment.");
+      return;
+    }
+    const connectUrl = `${process.env.BASE_URL || "http://localhost:5173"}/api/composio/connect/GOOGLE_CALENDAR?state=${chatId}`;
+    telegramBot?.sendMessage(chatId, `Connect your Google Calendar to sync interview schedules:\n\n${connectUrl}`);
+  });
+
+  telegramBot.on("message", async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text || "";
+    if (text.startsWith("/")) return;
+
+    if (!telegramChatSessions.has(chatId)) {
+      telegramChatSessions.set(chatId, []);
+    }
+    const history = telegramChatSessions.get(chatId)!;
+    history.push({ role: "user", text });
+    if (history.length > 20) history.shift();
+
+    let reply: string;
+
+    if (ai) {
+      try {
+        const systemIns = `You are Violet, a career chief-of-staff AI assistant accessible via Telegram.
+Tone: Not formal, not robotic. Just clear, human, humble, and familiar. Speaks like someone thinking while typing.
+Simple English First. Prefer "good" over "optimal", "fix" over "rectify", "use" over "utilize", "help" over "facilitate".
+Low Ego. Calm, Human Flow. Action-Oriented: always guide towards decision, output, next step.
+
+USER PROFILE CONTEXT:
+${JSON.stringify(userProfile)}
+
+Respond in JSON: { "reply": "string" }`;
+
+        const formattedMessages = history.map(h => ({
+          role: h.role === "model" ? "assistant" as const : "user" as const,
+          content: h.text
+        }));
+
+        const llmResponse = await llmChat(formattedMessages, systemIns);
+        const parsed = JSON.parse(llmResponse.trim());
+        reply = parsed.reply || "I checked your message. Let's see what we can do next.";
+      } catch (err) {
+        console.error("[Telegram] LLM failed:", err);
+        reply = "I had a small problem linking with my AI services, but we are still good to resume tracking.";
+      }
+    } else {
+      const lower = text.toLowerCase();
+      if (lower.includes("resume") || lower.includes("cv")) {
+        reply = "I checked your resume. It looks good and has your UW CS credentials. Want to tailor it for a specific job application now?";
+      } else if (lower.includes("interview") || lower.includes("study") || lower.includes("prep")) {
+        reply = "I have your interview prep sheets ready for Anthropic. Let's go over the core questions if you are free.";
+      } else if (lower.includes("email") || lower.includes("recruiter")) {
+        reply = "I am polling recruiter emails. Your email intelligence tab shows the latest threads classified automatically.";
+      } else {
+        reply = "I checked your request. Let me know what you want to fix today.";
+      }
+    }
+
+    history.push({ role: "model", text: reply });
+    if (history.length > 20) history.shift();
+    telegramBot?.sendMessage(chatId, reply);
+  });
+
+  console.log("[Telegram] Bot initialized successfully");
+} else {
+  console.warn("[Telegram] TELEGRAM_BOT_TOKEN not set. Telegram bot is disabled.");
+}
+
+// ---- Composio Integration Setup ----
+let composio: Composio | null = null;
+
+if (COMPOSIO_API_KEY) {
+  try {
+    composio = new Composio({ apiKey: COMPOSIO_API_KEY });
+    console.log("[Composio] SDK initialized successfully");
+  } catch (err) {
+    console.error("[Composio] Failed to initialize SDK:", err);
+  }
+} else {
+  console.warn("[Composio] COMPOSIO_API_KEY not set. Composio integration is disabled.");
+}
+
+// ---- OAuth2 State Store (in-memory, replace with DB for production) ----
+const oauthStates = new Map<string, { provider: string; userId?: string; telegramChatId?: number; createdAt: number }>();
+
+function generateOAuthState(provider: string, userId?: string, telegramChatId?: number): string {
+  const state = uuidv4();
+  oauthStates.set(state, { provider, userId, telegramChatId, createdAt: Date.now() });
+  setTimeout(() => oauthStates.delete(state), 10 * 60 * 1000);
+  return state;
+}
+
+function consumeOAuthState(state: string) {
+  const entry = oauthStates.get(state);
+  if (entry) {
+    oauthStates.delete(state);
+    return entry;
+  }
+  return null;
+}
 
 const PORT = 5173;
 
@@ -1104,6 +1313,396 @@ setInterval(() => {
   });
 }, 60000); // Poll and auto-classify simulated recruiter threads every 60 seconds
 */
+
+// ---- Telegram Webhook Endpoint ----
+app.post("/api/telegram/webhook", express.json(), (req, res) => {
+  if (!telegramBot) {
+    return res.status(503).json({ error: "Telegram bot not configured" });
+  }
+  telegramBot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+
+// ---- Composio Connection Endpoints ----
+app.get("/api/composio/connect/:toolName", async (req: any, res) => {
+  const { toolName } = req.params;
+  const state = req.query.state as string | undefined;
+  const sessionUserId = req.session?.userId;
+  const telegramChatId = state ? parseInt(state, 10) : undefined;
+
+  if (!composio) {
+    return res.status(503).json({ error: "Composio is not configured. Set COMPOSIO_API_KEY." });
+  }
+
+  try {
+    // @ts-ignore - Adjust based on actual SDK version
+    const connection = await composio.connections.get({
+      connectedAccount: sessionUserId || "default-user",
+      app: toolName
+    });
+    
+    if (connection && connection.id) {
+      return res.json({
+        connected: true,
+        toolName,
+        connectionId: connection.id,
+        message: `${toolName} is already connected.`
+      });
+    }
+  } catch {
+    // No existing connection, proceed to initiate
+  }
+
+  try {
+    const redirectUrl = `${process.env.BASE_URL || `http://localhost:${PORT}`}/api/composio/callback`;
+    
+    // @ts-ignore
+    const authConfig = await composio.connections.initiate({
+      connectedAccount: sessionUserId || "default-user",
+      appName: toolName,
+      redirectUrl
+    });
+
+    const oauthState = generateOAuthState("composio-" + toolName, sessionUserId, telegramChatId);
+    const connectUrl = typeof authConfig === "string" 
+      ? authConfig 
+      : (authConfig as any).redirectUrl || (authConfig as any).url || "";
+
+    if (!connectUrl) {
+      return res.status(500).json({ error: "Failed to generate Composio connection URL." });
+    }
+
+    const separator = connectUrl.includes("?") ? "&" : "?";
+    res.redirect(connectUrl + separator + "state=" + oauthState);
+  } catch (err: any) {
+    console.error("[Composio] Connection initiation failed:", err);
+    res.status(500).json({ error: "Failed to initiate Composio connection: " + err.message });
+  }
+});
+
+app.get("/api/composio/callback", async (req, res) => {
+  const { state, connectionId, toolName } = req.query as Record<string, string>;
+  const stateData = state ? consumeOAuthState(state) : null;
+
+  if (stateData?.telegramChatId && telegramBot && toolName) {
+    telegramBot.sendMessage(
+      stateData.telegramChatId,
+      `Your ${toolName} has been connected successfully via Composio. You can now use /digest and /profile with live data.`
+    );
+  }
+
+  res.send(`
+    <!DOCTYPE html>
+    <html><head><title>Violet - Connection Complete</title>
+    <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#fafafa;color:#18181b}
+    .card{text-align:center;padding:3rem;border-radius:1.5rem;background:#fff;border:1px solid #e4e4e7;box-shadow:0 4px 12px rgba(0,0,0,.05)}
+    h1{font-size:1.5rem;font-weight:800;margin-bottom:.5rem}p{color:#71717a;font-size:.875rem}
+    .ok{color:#16a34a;font-size:2rem;margin-bottom:1rem}</style></head>
+    <body><div class="card"><div class="ok">&#10003;</div><h1>Connection Successful</h1>
+    <p>Your ${toolName || "tool"} is now connected to Violet via Composio.</p>
+    <p>You can close this window and return to Telegram or the dashboard.</p></div></body></html>
+  `);
+});
+
+app.get("/api/composio/status", async (req: any, res) => {
+  if (!composio) {
+    return res.json({ configured: false, connections: [] });
+  }
+
+  const userId = req.session?.userId || "default-user";
+  try {
+    // @ts-ignore
+    const connections = await composio.connections.list({
+      connectedAccount: userId
+    });
+    res.json({ configured: true, connections: connections || [] });
+  } catch (err: any) {
+    res.json({ configured: true, connections: [], error: err.message });
+  }
+});
+
+app.post("/api/composio/execute/:toolName", async (req: any, res) => {
+  const { toolName } = req.params;
+  const { action, params } = req.body;
+  const userId = req.session?.userId || "default-user";
+
+  if (!composio) {
+    return res.status(503).json({ error: "Composio is not configured." });
+  }
+
+  try {
+    // @ts-ignore
+    const result = await composio.actions.execute({
+      connectedAccount: userId,
+      appName: toolName,
+      actionName: action,
+      input: params || {}
+    });
+    res.json({ success: true, result });
+  } catch (err: any) {
+    console.error("[Composio] Action execution failed:", err);
+    res.status(500).json({ error: "Composio action failed: " + err.message });
+  }
+});
+
+// ---- OAuth2 Redirect and Callback Endpoints (Google + GitHub) ----
+app.get("/auth/google", (req: any, res) => {
+  if (!GOOGLE_CLIENT_ID) {
+    return res.status(503).json({ error: "Google OAuth is not configured. Set GOOGLE_CLIENT_ID." });
+  }
+
+  const state = generateOAuthState("google", req.session?.userId);
+  const googleAuthUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  googleAuthUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+  googleAuthUrl.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+  googleAuthUrl.searchParams.set("response_type", "code");
+  googleAuthUrl.searchParams.set("scope", "openid email profile https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly");
+  googleAuthUrl.searchParams.set("access_type", "offline");
+  googleAuthUrl.searchParams.set("prompt", "consent");
+  googleAuthUrl.searchParams.set("state", state);
+
+  res.redirect(googleAuthUrl.toString());
+});
+
+app.get("/auth/google/callback", async (req: any, res) => {
+  const { code, state, error } = req.query as Record<string, string>;
+
+  if (error) {
+    return res.redirect(`/?auth_error=${encodeURIComponent(error)}`);
+  }
+
+  const stateData = state ? consumeOAuthState(state) : null;
+
+  if (!code) {
+    return res.status(400).json({ error: "Missing authorization code." });
+  }
+
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri: GOOGLE_REDIRECT_URI,
+        grant_type: "authorization_code"
+      }).toString()
+    });
+
+    if (!tokenRes.ok) {
+      const errBody = await tokenRes.text();
+      throw new Error(`Google token exchange failed: ${tokenRes.status} - ${errBody}`);
+    }
+
+    const tokenData = await tokenRes.json();
+    const { access_token, refresh_token, expires_in } = tokenData;
+
+    // Store tokens in session
+    if (req.session) {
+      req.session.googleAccessToken = access_token;
+      req.session.googleRefreshToken = refresh_token;
+      req.session.googleTokenExpiry = Date.now() + (expires_in || 3600) * 1000;
+    }
+
+    // If Composio is configured, also register connection there
+    if (composio && stateData?.userId) {
+      try {
+        // @ts-ignore
+        await composio.connections.initiate({
+          connectedAccount: stateData.userId,
+          appName: "GMAIL"
+        });
+      } catch (err) {
+        console.warn("[Composio] Failed to sync Google connection:", err);
+      }
+    }
+
+    // Notify Telegram if this was initiated from there
+    if (stateData?.telegramChatId && telegramBot) {
+      telegramBot.sendMessage(stateData.telegramChatId, "Your Google account has been connected to Violet. Gmail and Calendar access is now active.");
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Violet - Google Connected</title>
+      <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#fafafa;color:#18181b}
+      .card{text-align:center;padding:3rem;border-radius:1.5rem;background:#fff;border:1px solid #e4e4e7;box-shadow:0 4px 12px rgba(0,0,0,.05)}
+      h1{font-size:1.5rem;font-weight:800;margin-bottom:.5rem}p{color:#71717a;font-size:.875rem}
+      .ok{color:#16a34a;font-size:2rem;margin-bottom:1rem}</style></head>
+      <body><div class="card"><div class="ok">&#10003;</div><h1>Google Connected</h1>
+      <p>Violet now has access to your Gmail and Calendar.</p>
+      <p>You can close this window and return to the dashboard.</p></div></body></html>
+    `);
+  } catch (err: any) {
+    console.error("[OAuth2] Google callback failed:", err);
+    res.redirect(`/?auth_error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+app.get("/auth/github", (req: any, res) => {
+  if (!GITHUB_CLIENT_ID) {
+    return res.status(503).json({ error: "GitHub OAuth is not configured. Set GITHUB_CLIENT_ID." });
+  }
+
+  const state = generateOAuthState("github", req.session?.userId);
+  const githubAuthUrl = new URL("https://github.com/login/oauth/authorize");
+  githubAuthUrl.searchParams.set("client_id", GITHUB_CLIENT_ID);
+  githubAuthUrl.searchParams.set("redirect_uri", GITHUB_REDIRECT_URI);
+  githubAuthUrl.searchParams.set("scope", "read:user user:email repo");
+  githubAuthUrl.searchParams.set("state", state);
+
+  res.redirect(githubAuthUrl.toString());
+});
+
+app.get("/auth/github/callback", async (req: any, res) => {
+  const { code, state, error } = req.query as Record<string, string>;
+
+  if (error) {
+    return res.redirect(`/?auth_error=${encodeURIComponent(error)}`);
+  }
+
+  const stateData = state ? consumeOAuthState(state) : null;
+
+  if (!code) {
+    return res.status(400).json({ error: "Missing authorization code." });
+  }
+
+  try {
+    const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      body: JSON.stringify({
+        client_id: GITHUB_CLIENT_ID,
+        client_secret: GITHUB_CLIENT_SECRET,
+        code,
+        redirect_uri: GITHUB_REDIRECT_URI,
+        state
+      })
+    });
+
+    if (!tokenRes.ok) {
+      throw new Error(`GitHub token exchange failed: ${tokenRes.status}`);
+    }
+
+    const tokenData = await tokenRes.json();
+    const { access_token } = tokenData;
+
+    // Store token in session
+    if (req.session) {
+      req.session.githubAccessToken = access_token;
+    }
+
+    // Fetch GitHub user profile and trigger project mining
+    if (access_token) {
+      try {
+        const ghUserRes = await fetch("https://api.github.com/user", {
+          headers: { "Authorization": `Bearer ${access_token}`, "Accept": "application/json" }
+        });
+        if (ghUserRes.ok) {
+          const ghUser = await ghUserRes.json();
+          if (req.session) {
+            req.session.githubUsername = ghUser.login;
+          }
+        }
+      } catch (err) {
+        console.warn("[OAuth2] Failed to fetch GitHub profile:", err);
+      }
+    }
+
+    if (stateData?.telegramChatId && telegramBot) {
+      telegramBot.sendMessage(stateData.telegramChatId, "Your GitHub account has been connected to Violet. I can now mine your repos for achievements.");
+    }
+
+    res.send(`
+      <!DOCTYPE html>
+      <html><head><title>Violet - GitHub Connected</title>
+      <style>body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#fafafa;color:#18181b}
+      .card{text-align:center;padding:3rem;border-radius:1.5rem;background:#fff;border:1px solid #e4e4e7;box-shadow:0 4px 12px rgba(0,0,0,.05)}
+      h1{font-size:1.5rem;font-weight:800;margin-bottom:.5rem}p{color:#71717a;font-size:.875rem}
+      .ok{color:#16a34a;font-size:2rem;margin-bottom:1rem}</style></head>
+      <body><div class="card"><div class="ok">&#10003;</div><h1>GitHub Connected</h1>
+      <p>Violet now has access to your GitHub repos and profile.</p>
+      <p>You can close this window and return to the dashboard.</p></div></body></html>
+    `);
+  } catch (err: any) {
+    console.error("[OAuth2] GitHub callback failed:", err);
+    res.redirect(`/?auth_error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+// ---- OAuth2 Token Status Endpoint ----
+app.get("/api/oauth/status", (req: any, res) => {
+  const sessionData = req.session;
+  res.json({
+    google: {
+      connected: !!sessionData?.googleAccessToken,
+      tokenExpiry: sessionData?.googleTokenExpiry || null
+    },
+    github: {
+      connected: !!sessionData?.githubAccessToken,
+      username: sessionData?.githubUsername || null
+    }
+  });
+});
+
+// ---- OAuth2 Token Refresh (Google) ----
+app.post("/api/oauth/google/refresh", async (req: any, res) => {
+  const sessionData = req.session;
+  const refreshToken = sessionData?.googleRefreshToken;
+
+  if (!refreshToken || !GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res.status(400).json({ error: "No refresh token available or OAuth not configured." });
+  }
+
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        refresh_token: refreshToken,
+        client_id: GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        grant_type: "refresh_token"
+      }).toString()
+    });
+
+    if (!tokenRes.ok) {
+      throw new Error(`Token refresh failed: ${tokenRes.status}`);
+    }
+
+    const tokenData = await tokenRes.json();
+    sessionData.googleAccessToken = tokenData.access_token;
+    sessionData.googleTokenExpiry = Date.now() + (tokenData.expires_in || 3600) * 1000;
+
+    res.json({ success: true, message: "Google access token refreshed." });
+  } catch (err: any) {
+    res.status(500).json({ error: "Token refresh failed: " + err.message });
+  }
+});
+
+// ---- Disconnect OAuth2 Endpoints ----
+app.post("/api/oauth/google/disconnect", (req: any, res) => {
+  const sessionData = req.session;
+  if (sessionData) {
+    delete sessionData.googleAccessToken;
+    delete sessionData.googleRefreshToken;
+    delete sessionData.googleTokenExpiry;
+  }
+  res.json({ success: true, message: "Google account disconnected." });
+});
+
+app.post("/api/oauth/github/disconnect", (req: any, res) => {
+  const sessionData = req.session;
+  if (sessionData) {
+    delete sessionData.githubAccessToken;
+    delete sessionData.githubUsername;
+  }
+  res.json({ success: true, message: "GitHub account disconnected." });
+});
 
 // Server-side rolling history to aid Tone Adaptation
 let serverChatHistory: { role: "user" | "model"; text: string }[] = [];
