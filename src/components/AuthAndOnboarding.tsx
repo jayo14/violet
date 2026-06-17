@@ -142,11 +142,11 @@ export default function AuthAndOnboarding({ onComplete, userEmail }: AuthAndOnbo
         
         {/* Brand Header */}
         <div className="flex items-center justify-center gap-2 mb-6">
-          <div className="w-9 h-9 bg-zinc-950 text-white rounded-xl flex items-center justify-center text-md font-extrabold shadow-[0_3px_0_0_#52525b]">
-            V
+          <div className="w-9 h-9 bg-zinc-950 text-white rounded-xl flex items-center justify-center text-xl shadow-[0_3px_0_0_#52525b]">
+            🌸
           </div>
           <div>
-            <h2 className="text-zinc-950 text-base font-extrabold tracking-tight">VIOLET CO-PILOT</h2>
+            <h2 className="text-zinc-950 text-base font-extrabold tracking-tight">🌸 VIOLET CO-PILOT</h2>
             <p className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider">The Intelligent Chief-of-Staff</p>
           </div>
         </div>
