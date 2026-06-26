@@ -46,8 +46,16 @@ export default function IntegrationsManager() {
   };
 
   const handleConnect = (provider: string) => {
-    if (provider === "google") window.location.href = "/auth/google";
-    if (provider === "github") window.location.href = "/auth/github";
+    if (provider === "google") {
+      // Direct to Composio Google OAuth for GMAIL/CALENDAR integration
+      window.location.href = "/api/composio/connect/GMAIL";
+      return;
+    }
+    if (provider === "github") {
+      // Direct to service-specific mining or Appwrite account linking
+      alert("GitHub integration is currently managed via master profile linking.");
+      return;
+    }
     if (provider === "composio_gmail") window.location.href = "/api/composio/connect/GMAIL";
     if (provider === "composio_calendar") window.location.href = "/api/composio/connect/GOOGLE_CALENDAR";
     if (provider === "telegram") {
@@ -59,8 +67,11 @@ export default function IntegrationsManager() {
 
   const handleDisconnect = async (provider: string) => {
     try {
-      if (provider === "google") await fetch("/api/oauth/google/disconnect", { method: "POST" });
-      if (provider === "github") await fetch("/api/oauth/github/disconnect", { method: "POST" });
+      if (provider === "google" || provider === "github") {
+        // Appwrite logout handles this
+        console.log("Use master sign-out to disconnect auth providers.");
+        return;
+      }
       if (provider === "telegram") localStorage.removeItem("telegram_connected");
       fetchStatus();
     } catch (err) {

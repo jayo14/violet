@@ -6,7 +6,7 @@ import {
   Palette, Cpu, Layers, Zap, TrendingUp, Brain, Server, GraduationCap, Award, Globe, HelpCircle, Building2
 } from "lucide-react";
 import { UserProfile, CareerMemory } from "../types";
-import { loginWithGoogle, loginWithEmail, signupWithEmail } from "../appwrite";
+import { supabase } from "../utils/supabase";
 
 interface AuthAndOnboardingProps {
   onComplete: (profileData: Partial<UserProfile>, memoryData: Partial<CareerMemory>) => void;
@@ -39,8 +39,13 @@ export default function AuthAndOnboarding({ onComplete, userEmail }: AuthAndOnbo
     setIsSigningIn(true);
     setAuthError("");
     try {
-      // Appwrite OAuth redirects the browser — no return value
-      await loginWithGoogle();
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+      if (error) throw error;
     } catch (err: any) {
       console.error(err);
       setAuthError(err.message || "Failed to authenticate. Please verify popups are allowed.");
@@ -54,9 +59,22 @@ export default function AuthAndOnboarding({ onComplete, userEmail }: AuthAndOnbo
     setAuthError("");
     try {
       if (authTab === "signup") {
-        await signupWithEmail(email, password, fullName);
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              full_name: fullName
+            }
+          }
+        });
+        if (error) throw error;
       } else {
-        await loginWithEmail(email, password);
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+        if (error) throw error;
       }
       setScreen("onboarding");
     } catch (err: any) {

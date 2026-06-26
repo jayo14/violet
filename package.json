@@ -13,9 +13,9 @@
   },
   "dependencies": {
     "@composio/core": "^0.10.0",
+    "@supabase/supabase-js": "^2.108.2",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
-    "appwrite": "^17.0.2",
     "composio-core": "^0.5.39",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.2.3",
@@ -34,7 +34,6 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
-    "node-appwrite": "^14.1.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",

@@ -146,46 +146,16 @@ LLM_API_KEY=gsk_your_groq_key
 | `GET` | `/api/composio/status` | List connected tool integrations |
 | `POST` | `/api/composio/execute/:toolName` | Execute an action on a connected tool |
 
-## OAuth2 (Google & GitHub)
+## Master Authentication (Appwrite)
 
-Violet implements full OAuth2 authorization code flows for Google and GitHub, with token storage in server-side sessions and automatic refresh for Google.
+Violet uses [Appwrite](https://appwrite.io) for secure user authentication and data persistence.
+
+1. Configure your Google/GitHub OAuth2 providers in the [Appwrite Console](https://cloud.appwrite.io) under **Auth -> Settings -> OAuth2 Providers**.
+2. **IMPORTANT**: Add `http://localhost:5173` (or your production URL) as a **Web Platform** in Project Settings. This is required for session cookies to work on localhost.
+3. If you experience `401 Unauthorized` errors after login, ensure your browser allows third-party cookies for `appwrite.io` or use a custom domain.
+
 
 ### Google OAuth2 Setup
-
-1. Create credentials at [Google Cloud Console](https://console.cloud.google.com/apis/credentials).
-2. Add `http://localhost:5173/auth/google/callback` as a redirect URI.
-3. Set environment variables:
-   ```
-   GOOGLE_CLIENT_ID=your-client-id
-   GOOGLE_CLIENT_SECRET=your-client-secret
-   GOOGLE_REDIRECT_URI=http://localhost:5173/auth/google/callback
-   ```
-4. Scopes requested: `openid email profile gmail.readonly calendar.readonly`
-
-### GitHub OAuth2 Setup
-
-1. Register an OAuth app at [GitHub Developer Settings](https://github.com/settings/developers).
-2. Set `http://localhost:5173/auth/github/callback` as the callback URL.
-3. Set environment variables:
-   ```
-   GITHUB_CLIENT_ID=your-client-id
-   GITHUB_CLIENT_SECRET=your-client-secret
-   GITHUB_REDIRECT_URI=http://localhost:5173/auth/github/callback
-   ```
-4. Scopes requested: `read:user user:email repo`
-
-### OAuth2 API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/auth/google` | Redirect to Google consent screen |
-| `GET` | `/auth/google/callback` | Handle Google OAuth callback and store tokens |
-| `GET` | `/auth/github` | Redirect to GitHub consent screen |
-| `GET` | `/auth/github/callback` | Handle GitHub OAuth callback and store tokens |
-| `GET` | `/api/oauth/status` | Check connection status for Google & GitHub |
-| `POST` | `/api/oauth/google/refresh` | Refresh Google access token |
-| `POST` | `/api/oauth/google/disconnect` | Revoke Google token from session |
-| `POST` | `/api/oauth/github/disconnect` | Revoke GitHub token from session |
 
 ## Core API Endpoints
 
@@ -200,10 +170,10 @@ Violet implements full OAuth2 authorization code flows for Google and GitHub, wi
 | `POST` | `/api/interview-prep` | Generate interview prep materials |
 | `POST` | `/api/mine-github` | Extract achievements from GitHub repos |
 | `POST` | `/api/scan-emails` | Trigger incoming email scan |
-| `POST` | `/api/sync-real-gmail` | Sync real Gmail messages using OAuth token |
 | `POST` | `/api/chat` | Chat with Violet (used by web and Telegram) |
 
 ## Production Build
+
 
 ```bash
 npm run build

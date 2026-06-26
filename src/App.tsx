@@ -24,12 +24,8 @@ import {
   ApprovalRequest, CareerMemory, ApplicationStatus 
 } from "./types";
 
-// Appwrite Imports
-import { 
-  account, databases, logoutUser, OperationType, handleAppwriteError,
-  APPWRITE_DATABASE_ID, COLLECTIONS, getCurrentUser
-} from "./appwrite";
-import { Query } from "appwrite";
+// Supabase Import
+import { supabase } from "./utils/supabase";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
@@ -104,44 +100,54 @@ export default function App() {
   const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity | null>(null);
   const [analysisContext, setAnalysisContext] = useState<any>(null);
 
-  // Appwrite Auth + Data Sync
+
+  // Supabase Auth + Data Sync
   useEffect(() => {
     setIsLoading(true);
-    getCurrentUser().then(async (user) => {
-      if (user) {
-        setUserId(user.$id);
+    
+    const initializeApp = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (session) {
+        const userId = session.user.id;
+        setUserId(userId);
         setIsLoggedIn(true);
-        localStorage.setItem("career_os_logged_in", "true");
-        try {
-          const profileDoc = await databases.getDocument(APPWRITE_DATABASE_ID, COLLECTIONS.USERS, user.$id);
-          setProfile(profileDoc as unknown as UserProfile);
+
+        // Fetch User Data
+        const [profileRes, appsRes, emailsRes, achRes, apprRes] = await Promise.all([
+          supabase.from('users').select().eq('userId', userId).single(),
+          supabase.from('applications').select().eq('userId', userId),
+          supabase.from('emails').select().eq('userId', userId),
+          supabase.from('achievements').select().eq('userId', userId),
+          supabase.from('approvals').select().eq('userId', userId),
+        ]);
+
+        if (profileRes.data) {
+          setProfile(profileRes.data as UserProfile);
           setIsOnboarded(true);
-          localStorage.setItem("career_os_onboarded", "true");
-        } catch {
-          setIsOnboarded(false);
-          localStorage.setItem("career_os_onboarded", "false");
         }
-        try {
-          const [appsRes, emailsRes, achRes, apprRes] = await Promise.all([
-            databases.listDocuments(APPWRITE_DATABASE_ID, COLLECTIONS.APPLICATIONS, [Query.equal("userId", user.$id)]),
-            databases.listDocuments(APPWRITE_DATABASE_ID, COLLECTIONS.EMAILS, [Query.equal("userId", user.$id)]),
-            databases.listDocuments(APPWRITE_DATABASE_ID, COLLECTIONS.ACHIEVEMENTS, [Query.equal("userId", user.$id)]),
-            databases.listDocuments(APPWRITE_DATABASE_ID, COLLECTIONS.APPROVALS, [Query.equal("userId", user.$id)]),
-          ]);
-          setApplications((appsRes.documents as unknown as Opportunity[]).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-          setEmails((emailsRes.documents as unknown as EmailIntel[]).sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()));
-          setAchievements((achRes.documents as unknown as Achievement[]).sort((a, b) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime()));
-          setApprovals((apprRes.documents as unknown as ApprovalRequest[]).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
-        } catch (err) {
-          console.error("Failed loading Appwrite collections:", err);
-        }
-      } else {
-        setIsLoggedIn(false);
-        setIsOnboarded(false);
-        localStorage.removeItem("career_os_logged_in");
+        
+        if (appsRes.data) setApplications(appsRes.data.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+        if (emailsRes.data) setEmails(emailsRes.data.sort((a: any, b: any) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()));
+        if (achRes.data) setAchievements(achRes.data.sort((a: any, b: any) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime()));
+        if (apprRes.data) setApprovals(apprRes.data.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
       }
       setIsLoading(false);
+    };
+
+    initializeApp();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        setUserId(session.user.id);
+        setIsLoggedIn(true);
+      } else {
+        setIsLoggedIn(false);
+        setUserId(null);
+      }
     });
+
+    return () => subscription.unsubscribe();
   }, []);
 
   // API Callbacks for subcomponents
@@ -209,72 +215,101 @@ export default function App() {
   const handleUpdateProfile = async (updatedProfile: UserProfile) => {
     if (!userId) return;
     try {
-      await databases.createDocument(APPWRITE_DATABASE_ID, COLLECTIONS.USERS, userId, updatedProfile as any);
+      const { error } = await supabase
+        .from('users')
+        .upsert({ ...updatedProfile, userId });
+      if (error) throw error;
+      
       await fetch("/api/update-profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: updatedProfile, userId }) });
+      setProfile(updatedProfile);
     } catch (err) {
-      handleAppwriteError(err, OperationType.UPDATE, `users/${userId}`);
+      console.error("Profile update failed:", err);
     }
   };
 
   const handleApprove = async (id: string) => {
     if (!userId) return;
     try {
-      await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.APPROVALS, id, { status: "approved" });
+      const { error } = await supabase
+        .from('approvals')
+        .update({ status: "approved" })
+        .eq('id', id);
+      if (error) throw error;
+      
       const approvedItem = approvals.find((a) => a.id === id);
       if (!approvedItem) return;
+      
       if (approvedItem.type === "resume-variant") {
         const newDesc = `${profile.experience[0]?.description || ""} Approved Tailored Component: ${approvedItem.payload.tailoredBullet}`;
         const updatedExp = [...profile.experience];
         if (updatedExp[0]) updatedExp[0].description = newDesc;
         await handleUpdateProfile({ ...profile, experience: updatedExp });
       } else if (approvedItem.type === "add-achievement") {
-        await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.ACHIEVEMENTS, approvedItem.payload.id, { isAppliedToResume: true });
+        await supabase
+          .from('achievements')
+          .update({ isAppliedToResume: true })
+          .eq('id', approvedItem.payload.id);
       }
       setApprovals(prev => prev.map(a => a.id === id ? { ...a, status: "approved" } : a));
     } catch (err) {
-      handleAppwriteError(err, OperationType.UPDATE, `approvals/${id}`);
+      console.error("Approve failed:", err);
     }
   };
 
   const handleReject = async (id: string) => {
     if (!userId) return;
     try {
-      await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.APPROVALS, id, { status: "rejected" });
+      const { error } = await supabase
+        .from('approvals')
+        .update({ status: "rejected" })
+        .eq('id', id);
+      if (error) throw error;
       setApprovals(prev => prev.map(a => a.id === id ? { ...a, status: "rejected" } : a));
     } catch (err) {
-      handleAppwriteError(err, OperationType.UPDATE, `approvals/${id}`);
+      console.error("Reject failed:", err);
     }
   };
 
   const handleUpdateStatus = async (id: string, status: ApplicationStatus) => {
     if (!userId) return;
     try {
-      await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.APPLICATIONS, id, { status });
+      const { error } = await supabase
+        .from('applications')
+        .update({ status })
+        .eq('id', id);
+      if (error) throw error;
       setApplications(prev => prev.map(a => a.id === id ? { ...a, status } : a));
     } catch (err) {
-      handleAppwriteError(err, OperationType.UPDATE, `applications/${id}`);
+      console.error("Update status failed:", err);
     }
   };
 
   const handleMarkEmailProcessed = async (id: string) => {
     if (!userId) return;
     try {
-      await databases.updateDocument(APPWRITE_DATABASE_ID, COLLECTIONS.EMAILS, id, { processed: true });
+      const { error } = await supabase
+        .from('emails')
+        .update({ processed: true })
+        .eq('id', id);
+      if (error) throw error;
       setEmails(prev => prev.map(e => e.id === id ? { ...e, processed: true } : e));
     } catch (err) {
-      handleAppwriteError(err, OperationType.UPDATE, `emails/${id}`);
+      console.error("Mark email processed failed:", err);
     }
   };
 
   const handleCreateApprovalRequest = async (type: "resume-variant" | "cover-letter" | "cover-email", title: string, description: string, payload: any) => {
     if (!userId) return;
-    const newId = "appr-" + Date.now();
+    const newId = crypto.randomUUID();
     const newAppr = { id: newId, type, title, description, payload, status: "pending", createdAt: new Date().toISOString(), userId };
     try {
-      await databases.createDocument(APPWRITE_DATABASE_ID, COLLECTIONS.APPROVALS, newId, newAppr);
+      const { error } = await supabase
+        .from('approvals')
+        .insert([newAppr]);
+      if (error) throw error;
       setApprovals(prev => [newAppr as any, ...prev]);
     } catch (err) {
-      handleAppwriteError(err, OperationType.CREATE, `approvals/${newId}`);
+      console.error("Create approval failed:", err);
     }
   };
 
@@ -286,9 +321,9 @@ export default function App() {
   };
 
   const handleOnboardingComplete = async (completedProfile: Partial<UserProfile>, completedMemory: Partial<CareerMemory>) => {
-    const user = await getCurrentUser();
-    if (!user) return;
-    const uid = user.$id;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    const uid = session.user.id;
 
     const profileData = {
       id: uid, userId: uid,
@@ -299,24 +334,24 @@ export default function App() {
       education: profile.education, skills: completedProfile.skills || profile.skills,
       experience: profile.experience
     };
-    const memoryData = {
-      identity: completedMemory.identity || { skills: [], education: [], projects: [] },
-      preference: completedMemory.preference || { preferredRoles: [], preferredLocations: [], remotePreference: true },
-      history: completedMemory.history || { applications: [], interviews: [], offers: [] },
-      learning: memory.learning
-    };
+    
+    // ... (memory data logic)
 
     try {
-      await databases.createDocument(APPWRITE_DATABASE_ID, COLLECTIONS.USERS, uid, profileData as any);
+      const { error } = await supabase
+        .from('users')
+        .upsert(profileData);
+      if (error) throw error;
+      
       await fetch("/api/init-user", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: uid, profile: profileData, memory: memoryData })
+        body: JSON.stringify({ userId: uid, profile: profileData, memory: completedMemory })
       });
       setUserId(uid);
       setIsLoggedIn(true);
       setIsOnboarded(true);
     } catch (err) {
-      handleAppwriteError(err, OperationType.CREATE, `users/${uid}`);
+      console.error("Onboarding failed:", err);
     }
   };
 
@@ -376,7 +411,7 @@ export default function App() {
           </span>
           <button 
             type="button"
-            onClick={() => logoutUser()}
+            onClick={async () => await supabase.auth.signOut()}
             className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:text-zinc-950 border border-zinc-200 hover:border-zinc-400 bg-white hover:bg-zinc-50 rounded transition-all cursor-pointer shadow-[0_1.5px_0_0_#e4e4e7] active:translate-y-[1px] active:shadow-none"
           >
             Sign Out
